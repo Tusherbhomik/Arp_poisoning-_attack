@@ -2,7 +2,7 @@ version: '3.8'
 services:
   # Attacker machine (Kali-like)
   attacker:
-    image: kalilinux/kali-rolling
+    build: .
     container_name: attacker
     hostname: attacker
     privileged: true
